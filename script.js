@@ -147,7 +147,7 @@ function initThree() {
 
   buildPlatform();
   buildGrid();
-  loadGLB('opel_gt_retopo.glb');
+  loadGLB('https://raw.githubusercontent.com/rsrk07/carapp/main/opel_gt_retopo.glb');
   attachInputEvents(canvas);
   window.addEventListener('resize', resizeRenderer);
   animate(0);
