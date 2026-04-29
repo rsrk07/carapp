@@ -143,7 +143,7 @@ function initThree() {
   rim.position.set(0, 3, -6);
   scene.add(rim);
 
-  scene.add(Object.assign(new THREE.PointLight(0xe8c97b, 0.4, 10), { position: new THREE.Vector3(0, -0.5, 0) }));
+  const light = new THREE.PointLight(0xe8c97b, 0.4, 10); light.position.set(0, -0.5, 0); scene.add(light);
 
   buildPlatform();
   buildGrid();
