@@ -1,8 +1,8 @@
 /**
  * Car360 Configurator — script.js
  * Three.js r128
- * FIXES: color change, spare tire excluded, door axis correct,
- *        interior free orbit+zoom, app renamed to Car360
+ * FIXED: loading screen always completes, app always shows,
+ *        GLB loads with proper error handling for GitHub Pages
  */
 
 /* ══════════════════════════════════════════════
@@ -54,11 +54,8 @@ let state = {
 ══════════════════════════════════════════════ */
 let renderer, scene, camera;
 let carGroup, wheelMeshes = [], doorMeshes = [];
-
-// All body meshes collected for reliable color change
 let bodyMeshList = [];
 
-// Camera orbit (works in BOTH exterior and interior)
 let isDragging   = false;
 let lastMouse    = { x: 0, y: 0 };
 let yaw          = 0;
@@ -66,14 +63,42 @@ let pitch        = 0.18;
 let camRadius    = 9;
 let camRadiusTarget = 9;
 
-// Interior free-orbit center point
 let intYaw   = 0;
 let intPitch = 0.05;
 
-// Door animation
 let doorAnimProgress = 0;
 let doorAnimating    = false;
 let lastTime         = 0;
+
+/* ══════════════════════════════════════════════
+   REVEAL APP — called once loading is done
+   This is the KEY FIX: always show the app
+══════════════════════════════════════════════ */
+function revealApp() {
+  const loadingScreen = document.getElementById('loading-screen');
+  const app           = document.getElementById('app');
+
+  // Force remove hidden first (important!)
+  app.classList.remove('hidden');
+  app.style.opacity = '0';
+
+  // Fade out loading screen
+  loadingScreen.style.opacity    = '0';
+  loadingScreen.style.visibility = 'hidden';
+
+  // Fade in app
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      app.style.transition = 'opacity 0.8s ease';
+      app.style.opacity    = '1';
+    });
+  });
+
+  // Fully hide loading screen after transition
+  setTimeout(() => {
+    loadingScreen.style.display = 'none';
+  }, 900);
+}
 
 /* ══════════════════════════════════════════════
    INIT
@@ -129,7 +154,7 @@ function initThree() {
 }
 
 /* ══════════════════════════════════════════════
-   LOAD GLB — root path, no models/ folder
+   LOAD GLB
 ══════════════════════════════════════════════ */
 function loadGLB(filename) {
   const loader = new THREE.GLTFLoader();
@@ -137,9 +162,15 @@ function loadGLB(filename) {
   draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
   loader.setDRACOLoader(draco);
 
+  // Update loading text
+  const label = document.getElementById('loader-text');
+  const bar   = document.getElementById('loader-bar');
+  if (label) label.textContent = 'Loading 3D model…';
+
   loader.load(
-    filename,          // ← root path, Option A
+    filename,
     (gltf) => {
+      // SUCCESS
       if (carGroup) scene.remove(carGroup);
       carGroup      = gltf.scene;
       bodyMeshList  = [];
@@ -150,39 +181,26 @@ function loadGLB(filename) {
 
       scene.add(carGroup);
 
-      // Shadows
       carGroup.traverse(c => {
         if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
       });
 
-      // Auto-fit & center
       autoFit(carGroup);
 
-      // Print all names to console for debugging
-      console.log('=== MESH NAMES IN ' + filename + ' ===');
-      carGroup.traverse(c => { if (c.name) console.log(' >', c.name, '| type:', c.type); });
-      console.log('=====================================');
-
-      // ── Detect BODY meshes (for color change) ──
-      // Collects ALL meshes that are not glass/emissive/tiny
-      // so color always works regardless of material values
+      // Detect body meshes
       carGroup.traverse(c => {
         if (!c.isMesh) return;
-        const n   = c.name.toLowerCase();
-        const mat = Array.isArray(c.material) ? c.material[0] : c.material;
-
-        // Skip obvious non-body parts
+        const n = c.name.toLowerCase();
         const skip =
           n.includes('glass')   || n.includes('window') ||
           n.includes('light')   || n.includes('lamp')   ||
           n.includes('lens')    || n.includes('screen')  ||
           n.includes('chrome')  || n.includes('exhaust') ||
           n.includes('interior')|| n.includes('seat');
-
         if (!skip) bodyMeshList.push(c);
       });
 
-      // ── Detect WHEELS — exclude spare & steering ──
+      // Detect wheels
       const allWheels = [];
       carGroup.traverse(c => {
         const n = c.name.toLowerCase();
@@ -198,36 +216,28 @@ function loadGLB(filename) {
       });
 
       if (allWheels.length > 0) {
-        // Find Y and |X| positions
         const positions = allWheels.map(w => {
           const p = new THREE.Vector3();
           w.getWorldPosition(p);
           return { mesh: w, y: p.y, ax: Math.abs(p.x) };
         });
-        const minY   = Math.min(...positions.map(p => p.y));
-        const maxAX  = Math.max(...positions.map(p => p.ax));
+        const minY  = Math.min(...positions.map(p => p.y));
+        const maxAX = Math.max(...positions.map(p => p.ax));
 
         positions.forEach(({ mesh, y, ax }) => {
-          // Real rolling wheels: near ground AND near sides
-          // Spare tire: sits on hood (high Y or center X)
           const nearGround = y < minY + 1.0;
           const onSide     = ax > maxAX * 0.3;
           if (nearGround && onSide) {
-            // Detect spin axis from world quaternion
             const q = new THREE.Quaternion();
             mesh.getWorldQuaternion(q);
             const fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
             mesh.userData.spinAxis = Math.abs(fwd.x) > 0.7 ? 'z' : 'x';
             wheelMeshes.push(mesh);
-            console.log('  ✅ Wheel:', mesh.name, 'y='+y.toFixed(2), 'ax='+ax.toFixed(2));
-          } else {
-            console.log('  ❌ Excluded (spare/center):', mesh.name, 'y='+y.toFixed(2), 'ax='+ax.toFixed(2));
           }
         });
       }
-      console.log('Rolling wheels found:', wheelMeshes.length);
 
-      // ── Detect DOORS ──
+      // Detect doors
       carGroup.traverse(c => {
         if (!c.isMesh) return;
         const n = c.name.toLowerCase();
@@ -236,33 +246,41 @@ function loadGLB(filename) {
           n.includes('porte') || n.includes('puerta') ||
           n.includes('hatch')
         ) {
-          // Save original LOCAL rotation
           c.userData.origRotX = c.rotation.x;
           c.userData.origRotY = c.rotation.y;
           c.userData.origRotZ = c.rotation.z;
-
-          // World position → determine which side
           const wp = new THREE.Vector3();
           c.getWorldPosition(wp);
-          // Right side (positive X world) → opens toward positive Y rotation
-          // Left side (negative X world)  → opens toward negative Y rotation
           c.userData.openSide = wp.x >= 0 ? -1 : 1;
-
           doorMeshes.push(c);
-          console.log('  Door:', c.name, 'worldX='+wp.x.toFixed(2), 'openSide='+c.userData.openSide);
         }
       });
-      console.log('Doors found:', doorMeshes.length);
 
       updateDoorButton();
-
-      // Apply saved color after model loads
       applyColorToScene(CAR_COLORS[state.colorIdx]);
+
+      // Model loaded — trigger reveal
+      if (bar) bar.style.width = '100%';
+      if (label) label.textContent = 'Welcome to Car360.';
+      setTimeout(revealApp, 400);
     },
-    xhr => console.log('Loading:', Math.round(xhr.loaded / xhr.total * 100) + '%'),
-    err => {
-      console.error('GLB error:', err);
-      showToast('⚠ Model load failed — check console');
+
+    // PROGRESS
+    (xhr) => {
+      if (xhr.lengthComputable && bar) {
+        const pct = Math.round((xhr.loaded / xhr.total) * 100);
+        bar.style.width = Math.min(pct, 95) + '%';
+        if (label) label.textContent = 'Loading model… ' + pct + '%';
+      }
+    },
+
+    // ERROR — still show the app even if model fails
+    (err) => {
+      console.error('GLB load error:', err);
+      if (bar)   bar.style.width = '100%';
+      if (label) label.textContent = 'Studio ready (model unavailable)';
+      showToast('⚠ 3D model failed to load');
+      setTimeout(revealApp, 600);
     }
   );
 }
@@ -276,8 +294,8 @@ function autoFit(group) {
   const target = aspect > 1.4 ? 5.5 : 4.0;
   group.scale.setScalar(target / maxDim);
 
-  const box2   = new THREE.Box3().setFromObject(group);
-  const ctr    = box2.getCenter(new THREE.Vector3());
+  const box2 = new THREE.Box3().setFromObject(group);
+  const ctr  = box2.getCenter(new THREE.Vector3());
   group.position.set(-ctr.x, -box2.min.y + 0.05, -ctr.z);
 }
 
@@ -337,8 +355,7 @@ function animate(time) {
     camera.position.lerp(new THREE.Vector3(cx, cy, cz), 0.06);
     camera.lookAt(0, 0.7, 0);
   } else {
-    // ── INTERIOR: free orbit around cockpit center ──
-    const ir  = camRadius;   // same zoom variable works here
+    const ir  = camRadius;
     const icx = Math.sin(intYaw) * Math.cos(intPitch) * ir;
     const icy = Math.sin(intPitch) * ir + 0.85;
     const icz = Math.cos(intYaw) * Math.cos(intPitch) * ir;
@@ -355,9 +372,8 @@ function animate(time) {
       doorAnimating    = false;
     }
     doorMeshes.forEach(door => {
-      // Y-axis swing (like a real car door hinge on its front pillar)
-      const openAngle = door.userData.openSide * Math.PI * 0.50; // 90°
-      const tilt      = door.userData.openSide * Math.PI * 0.06; // slight outward
+      const openAngle = door.userData.openSide * Math.PI * 0.50;
+      const tilt      = door.userData.openSide * Math.PI * 0.06;
       door.rotation.y = door.userData.origRotY + doorAnimProgress * openAngle;
       door.rotation.z = door.userData.origRotZ + doorAnimProgress * tilt;
     });
@@ -376,7 +392,6 @@ function animate(time) {
 
 /* ══════════════════════════════════════════════
    INPUT — drag + scroll + touch
-   Works in BOTH exterior and interior views
 ══════════════════════════════════════════════ */
 function attachInputEvents(canvas) {
   canvas.addEventListener('mousedown', e => {
@@ -394,7 +409,6 @@ function attachInputEvents(canvas) {
       pitch += dy;
       pitch  = Math.max(-0.3, Math.min(0.8, pitch));
     } else {
-      // Interior: same drag controls orbit around cockpit
       intYaw   += dx;
       intPitch += dy;
       intPitch  = Math.max(-0.5, Math.min(0.6, intPitch));
@@ -408,13 +422,11 @@ function attachInputEvents(canvas) {
   });
   canvas.style.cursor = 'grab';
 
-  // Scroll zoom — works in both views
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
     camRadiusTarget = Math.max(0.8, Math.min(18, camRadiusTarget + e.deltaY * 0.012));
   }, { passive: false });
 
-  // Touch
   let lastTouch = null;
   canvas.addEventListener('touchstart', e => {
     lastTouch  = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -444,8 +456,7 @@ function resizeRenderer() {
 }
 
 /* ══════════════════════════════════════════════
-   COLOR CHANGE — reliable method
-   Applies to ALL non-glass/non-emissive meshes
+   COLOR CHANGE
 ══════════════════════════════════════════════ */
 function applyColorToScene(col) {
   if (!carGroup) return;
@@ -457,13 +468,11 @@ function applyColorToScene(col) {
     mats.forEach((mat, mi) => {
       if (!mat) return;
 
-      // Skip glass, emissive lights, pure black rubber (very dark + no metal)
       const isGlass    = mat.transmission > 0 || mat.opacity < 0.9;
       const isEmissive = mat.emissiveIntensity > 0.5;
       const isRubber   = mat.metalness < 0.05 && mat.roughness > 0.85;
       if (isGlass || isEmissive || isRubber) return;
 
-      // Clone per-instance so other objects aren't affected
       const key = 'cloned_' + mi;
       if (!obj.userData[key]) {
         if (Array.isArray(obj.material)) {
@@ -537,9 +546,7 @@ function applyFinish() {
 
 function toggleDoors() {
   if (doorMeshes.length === 0) {
-    showToast('No door meshes found — see console');
-    console.warn('Open DevTools > Console, find door mesh names in the list above,');
-    console.warn('then add: n.includes("YOUR_NAME") inside the door detection block.');
+    showToast('No door meshes found in this model');
     return;
   }
   state.doorsOpen = !state.doorsOpen;
@@ -561,7 +568,6 @@ function toggleView(view) {
   document.getElementById('btn-exterior').classList.toggle('active', view === 'exterior');
   document.getElementById('btn-interior').classList.toggle('active', view === 'interior');
   if (view === 'interior') {
-    // Start interior close-up
     camRadiusTarget = 2.0;
     intYaw   = 0;
     intPitch = 0.05;
@@ -583,11 +589,10 @@ function updateDoorButton() {
   const btn = document.getElementById('btn-doors');
   if (doorMeshes.length === 0) {
     btn.style.opacity = '0.45';
-    btn.title = 'No door meshes detected. Check console for mesh names.';
+    btn.title = 'No door meshes detected in model';
   } else {
     btn.style.opacity = '1';
     btn.title = doorMeshes.length + ' door(s) found';
-    showToast(doorMeshes.length + ' door(s) ready');
   }
 }
 
@@ -726,32 +731,27 @@ function toggleFullscreen() {
 }
 
 /* ══════════════════════════════════════════════
-   LOADING SEQUENCE
+   LOADING SEQUENCE — animates the bar while
+   GLB is fetching in the background
 ══════════════════════════════════════════════ */
 function runLoadingSequence() {
   const bar   = document.getElementById('loader-bar');
   const label = document.getElementById('loader-text');
+
+  // Animate to 40% quickly, then slow down — real progress takes over from loadGLB
   const steps = [
-    { pct: 20,  msg: 'Loading studio environment…' },
-    { pct: 45,  msg: 'Building car geometry…' },
-    { pct: 65,  msg: 'Applying materials…' },
-    { pct: 82,  msg: 'Initializing lighting…' },
-    { pct: 95,  msg: 'Almost ready…' },
-    { pct: 100, msg: 'Welcome to Car360.' },
+    { pct: 10,  msg: 'Initializing studio…',        delay: 200 },
+    { pct: 25,  msg: 'Building environment…',        delay: 300 },
+    { pct: 40,  msg: 'Loading 3D model…',            delay: 400 },
   ];
+
   let i = 0;
   (function next() {
-    if (i >= steps.length) {
-      setTimeout(() => {
-        document.getElementById('loading-screen').classList.add('fade-out');
-        document.getElementById('app').classList.remove('hidden');
-      }, 450);
-      return;
-    }
+    if (i >= steps.length) return; // hand off to loadGLB progress
     const s = steps[i++];
-    bar.style.width = s.pct + '%';
+    bar.style.width   = s.pct + '%';
     label.textContent = s.msg;
-    setTimeout(next, 300 + Math.random() * 200);
+    setTimeout(next, s.delay + Math.random() * 150);
   })();
 }
 
@@ -759,13 +759,14 @@ function runLoadingSequence() {
    BOOT
 ══════════════════════════════════════════════ */
 window.addEventListener('DOMContentLoaded', () => {
-  initThree();
+  // Build UI immediately
   buildColorGrid();
   buildWheelOptions();
   buildFinishButtons();
   buildSpecs();
   buildConfigs();
 
+  // Wire up all buttons
   document.getElementById('btn-exterior').addEventListener('click', () => toggleView('exterior'));
   document.getElementById('btn-interior').addEventListener('click', () => toggleView('interior'));
   document.getElementById('btn-rotate').addEventListener('click', toggleAutoRotate);
@@ -783,5 +784,16 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Start loading animation, then init Three.js (which loads the GLB)
   runLoadingSequence();
+  initThree();
+
+  // SAFETY NET: if GLB takes more than 20 seconds, show app anyway
+  setTimeout(() => {
+    const app = document.getElementById('app');
+    if (app.classList.contains('hidden') || app.style.opacity === '0') {
+      console.warn('Safety net: forcing app reveal after timeout');
+      revealApp();
+    }
+  }, 20000);
 });
